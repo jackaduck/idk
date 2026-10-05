@@ -1,0 +1,82 @@
+name: Build 3DS (CIA + 3DSX)
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkitarm:latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install helper packages
+        run: |
+          apt-get update
+          apt-get install -y curl unzip build-essential
+
+      - name: Run host tests (recognizer + wave logic)
+        run: make test
+
+      - name: Install 3DS libraries
+        run: |
+          dkp-pacman -Syu --noconfirm
+          dkp-pacman -S --noconfirm 3ds-dev
+
+      - name: Install makerom
+        run: |
+          set -e
+          # Ask GitHub for the real asset list instead of guessing file names.
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/3DSGuy/Project_CTR/releases > ctr_releases.json
+          URL=$(grep -o '"browser_download_url": *"[^"]*"' ctr_releases.json \
+                | grep -i 'makerom' | grep -i 'ubuntu' | grep -i 'x86_64' \
+                | head -n1 | sed 's/.*"\(https[^"]*\)"/\1/')
+          echo "makerom asset: $URL"
+          if [ -z "$URL" ]; then
+            echo "No makerom ubuntu x86_64 asset found. Assets seen:"
+            grep -o '"browser_download_url": *"[^"]*"' ctr_releases.json | head -n 40
+            exit 1
+          fi
+          curl -fsSL -o makerom.zip "$URL"
+          unzip -o makerom.zip -d makerom_dir
+          install -m 755 "$(find makerom_dir -type f -name 'makerom*' ! -name '*.zip' | head -n1)" /usr/local/bin/makerom
+          makerom -version || true
+
+      - name: Install bannertool
+        run: |
+          set -e
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/Steveice10/bannertool/releases/latest > bt_release.json
+          URL=$(grep -o '"browser_download_url": *"[^"]*"' bt_release.json \
+                | head -n1 | sed 's/.*"\(https[^"]*\)"/\1/')
+          echo "bannertool asset: $URL"
+          if [ -z "$URL" ]; then
+            echo "No bannertool asset found. Release JSON:"; cat bt_release.json | head -n 60
+            exit 1
+          fi
+          curl -fsSL -o bannertool.zip "$URL"
+          unzip -o bannertool.zip -d bt
+          BIN=$(find bt -type f -path '*linux-x86_64*' -name bannertool | head -n1)
+          if [ -z "$BIN" ]; then
+            echo "linux-x86_64 bannertool not in zip. Contents:"; find bt -type f; exit 1
+          fi
+          install -m 755 "$BIN" /usr/local/bin/bannertool
+
+      - name: Build .3dsx
+        run: |
+          make clean
+          make
+
+      - name: Build .cia
+        run: make cia
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SigilSiege
+          path: |
+            SigilSiege.cia
+            SigilSiege.3dsx
